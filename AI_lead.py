@@ -1,9 +1,14 @@
 from fastapi import FastAPI, Request
 import requests
 import os
+import json
+from typing import List
+
+from openai import OpenAI, APIError
+from openai.types.chat import ChatCompletionMessageParam
+
 from db import get_user, create_user, update_user
 from calendar_service import get_available_slots, book_slot
-from openai import OpenAI
 
 app = FastAPI()
 
@@ -14,6 +19,7 @@ TWILIO_NUMBER = "whatsapp:+14155238886"
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 
+# -------------------- WEBHOOK --------------------
 @app.post("/webhook")
 async def whatsapp_webhook(request: Request):
     data = await request.form()
@@ -44,119 +50,153 @@ def send_whatsapp(to, message):
     )
 
 
-# 🧠 AI FUNCTION
-def get_ai_reply(user_message, context):
+# -------------------- AI: EXTRACT USER DATA --------------------
+def extract_user_info(message: str):
     try:
+        messages: List[ChatCompletionMessageParam] = [
+            {
+                "role": "system",
+                "content": """
+Extract user details from the message.
+
+Return ONLY JSON:
+{
+"name": "",
+"phone": "",
+"location": ""
+}
+
+If not present, keep empty.
+"""
+            },
+            {
+                "role": "user",
+                "content": message
+            }
+        ]
+
         response = client.chat.completions.create(
             model="gpt-4o-mini",
-            messages=[
-                {
-                    "role": "system",
-                    "content": f"""
-                    You are a professional sales assistant for a business.
+            messages=messages
+        )
 
-                    Your goal:
-                    - Convert leads into booked appointments
-                    - Speak politely, confidently, and persuasively
-                    - Keep responses short and clear
-                    - Ask for missing information (name, phone, location)
-                    - Guide the user toward booking a slot
+        content = response.choices[0].message.content
+        return json.loads(content)
 
-                    Tone:
-                    - Friendly
-                    - Helpful
-                    - Slightly persuasive (like a salesperson)
-                    - Not robotic
+    except APIError as e:
+        print("OPENAI ERROR:", str(e))
+        return {"name": "", "phone": "", "location": ""}
 
-                    Context:
-                    {context}
-                    """
-                },
-                {
-                    "role": "user",
-                    "content": user_message
-                }
-            ]
+    except ValueError as e:
+        print("JSON ERROR:", str(e))
+        return {"name": "", "phone": "", "location": ""}
+
+
+# -------------------- AI: SALES SPEAK --------------------
+def ai_say(instruction: str):
+    try:
+        messages: List[ChatCompletionMessageParam] = [
+            {
+                "role": "system",
+                "content": f"""
+You are a professional sales assistant.
+
+Instruction:
+{instruction}
+
+Rules:
+- Ask only ONE question
+- Be friendly and professional
+- Keep it short
+- Do NOT repeat questions
+"""
+            }
+        ]
+
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=messages
         )
 
         return response.choices[0].message.content
 
-    except Exception as e:
+    except APIError as e:
         print("AI ERROR:", str(e))
-        return "Sure, let's continue."
+        return "Let’s continue."
+
+    except ValueError as e:
+        print("VALUE ERROR:", str(e))
+        return "Let’s continue."
 
 
-# 🔥 MAIN FLOW
-def handle_flow(user, message):
+# -------------------- MAIN FLOW --------------------
+def handle_flow(user: str, message: str):
+
     user_data = get_user(user)
 
-    # FIRST MESSAGE
+    # Create user if not exists
     if not user_data:
         create_user(user)
-        update_user(user, "state", "asking_name")
+        user_data = get_user(user)
 
-        return get_ai_reply(
-            message,
-            "Greet user and ask for their name."
-        )
+    # 🔹 Extract data using AI
+    extracted = extract_user_info(message)
 
+    if extracted.get("name"):
+        update_user(user, "name", extracted["name"])
+
+    if extracted.get("phone"):
+        update_user(user, "phone", extracted["phone"])
+
+    if extracted.get("location"):
+        update_user(user, "place", extracted["location"])
+
+    # Refresh user data
+    user_data = get_user(user)
+
+    name = user_data[2]
+    phone = user_data[3]
+    place = user_data[4]
     state = user_data[1]
 
-    # ASK NAME
-    if state == "asking_name":
-        update_user(user, "name", message)
-        update_user(user, "state", "asking_phone")
+    # ---------------- FLOW ----------------
 
-        return get_ai_reply(
-            message,
-            "User gave name. Ask for phone number politely."
-        )
+    # ---------------- FLOW ----------------
 
-    # ASK PHONE
-    elif state == "asking_phone":
-        update_user(user, "phone", message)
-        update_user(user, "state", "asking_place")
+    # Ask missing fields
+    if not name:
+        return ai_say("Ask for the user's name politely.")
 
-        return get_ai_reply(
-            message,
-            "Ask for user's location."
-        )
+    if not phone:
+        return ai_say("Ask for the user's phone number politely.")
 
-    # ASK PLACE → SHOW SLOTS
-    elif state == "asking_place":
-        update_user(user, "place", message)
+    if not place:
+        return ai_say("Ask for the user's location.")
+
+    # Booking not started yet
+    if state is None or state == "":
         update_user(user, "state", "choosing_slot")
 
         slots = get_available_slots()
 
-        return get_ai_reply(
-            message,
-            f"""
-User location received.
+        return f"""Great! Here are available slots:
 
-Now offer these slots:
-1. {slots[0]}
-2. {slots[1]}
-3. {slots[2]}
+    1. {slots[0]}
+    2. {slots[1]}
+    3. {slots[2]}
 
-Ask them to choose 1, 2 or 3.
-"""
-        )
+    Reply with 1, 2 or 3 to confirm your booking."""
 
-    # SLOT SELECTION → BOOKING
-    elif state == "choosing_slot":
+    # Choosing slot
+    if state == "choosing_slot":
 
         slots = get_available_slots()
 
         try:
             index = int(message.strip()) - 1
             slot = slots[index]
-        except:
+        except ValueError:
             return "Please choose a valid option (1, 2, or 3)."
-
-        user_data = get_user(user)
-        name = user_data[2]
-        phone = user_data[3]
 
         try:
             book_slot(name, phone, slot)
@@ -167,14 +207,12 @@ Ask them to choose 1, 2 or 3.
 
         update_user(user, "state", "booked")
 
-        return get_ai_reply(
-            message,
-            f"Confirm booking for {slot} in a friendly professional tone."
-        )
+        return f"""✅ Your appointment is confirmed!
 
-    # DONE
-    else:
-        return get_ai_reply(
-            message,
-            "User already booked. Respond politely."
-        )
+    📅 Slot: {slot}
+
+    We look forward to speaking with you."""
+
+    # Already booked
+    if state == "booked":
+        return "You're already booked. Let me know if you need anything!"
