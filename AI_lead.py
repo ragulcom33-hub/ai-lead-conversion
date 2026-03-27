@@ -17,7 +17,7 @@ TWILIO_AUTH = os.getenv("TWILIO_AUTH")
 TWILIO_NUMBER = "whatsapp:+14155238886"
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
+i = 0
 
 # -------------------- WEBHOOK --------------------
 @app.post("/webhook")
@@ -214,6 +214,16 @@ def handle_flow(user: str, message: str):
 
     We look forward to speaking with you."""
 
-    # Already booked
     if state == "booked":
+        update_user(user, "state", "booked_once")
+
         return "You're already booked. Let me know if you need anything!"
+
+    if state == "booked_once":
+        # Reset everything
+        update_user(user, "state", "")
+        update_user(user, "name", "")
+        update_user(user, "phone", "")
+        update_user(user, "place", "")
+
+        return "Welcome back! Let's book a new appointment 😊\n\nMay I have your name?"
