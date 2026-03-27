@@ -150,6 +150,7 @@ def handle_flow(user: str, message: str):
 
     if extracted.get("location"):
         update_user(user, "place", extracted["location"])
+        update_user(user, "state", "ready_for_slots")
 
     # Refresh user data
     user_data = get_user(user)
@@ -173,8 +174,8 @@ def handle_flow(user: str, message: str):
     if not place:
         return ai_say("Ask for the user's location.")
 
-    # Booking not started yet
-    if state is None or state == "":
+    # Show slots after all data collected
+    if state == "ready_for_slots":
         update_user(user, "state", "choosing_slot")
 
         slots = get_available_slots()
