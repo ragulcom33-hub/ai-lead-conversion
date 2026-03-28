@@ -11,16 +11,18 @@ from openai.types.chat import ChatCompletionMessageParam
 
 from db import get_user, create_user, update_user
 
-# ---------------- GOOGLE CALENDAR SETUP ----------------s
+# ---------------- GOOGLE CALENDAR SETUP ----------------
 from googleapiclient.discovery import build
 from google.oauth2 import service_account
 
 SCOPES = ['https://www.googleapis.com/auth/calendar']
+
 SERVICE_ACCOUNT_INFO = json.loads(os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON"))
 
 credentials = service_account.Credentials.from_service_account_info(
     SERVICE_ACCOUNT_INFO,
-    scopes=SCOPES)
+    scopes=SCOPES
+)
 
 CALENDAR_ID = "ragulcom33@gmail.com"
 
@@ -144,6 +146,9 @@ def get_available_slots():
 
         day_offset += 1
 
+    if not slots:
+        print("⚠️ No slots found")
+
     print("SLOTS GENERATED:", slots)
 
     return slots
@@ -202,21 +207,28 @@ Return ONLY JSON:
         return {"name": "", "phone": "", "location": ""}
 
 
-def ai_say(instruction: str):
+def ai_say(instruction: str, context: str = ""):
     try:
-        messages = [{
-            "role": "system",
-            "content": f"""
-You are a professional assistant.
+        messages = [
+            {
+                "role": "system",
+                "content": f"""
+You are a friendly WhatsApp assistant helping users book appointments.
+
+Context:
+{context}
 
 Instruction:
 {instruction}
 
 Rules:
-- Ask only ONE question
+- Be natural and conversational
+- Vary wording (avoid repetition)
 - Keep it short
+- Ask only ONE question
 """
-        }]
+            }
+        ]
 
         response = client.chat.completions.create(
             model="gpt-4o-mini",
@@ -236,7 +248,8 @@ def handle_flow(user: str, message: str):
 
     if not user_data:
         create_user(user)
-        user_data = get_user(user)
+
+    user_data = get_user(user)
 
     extracted = extract_user_info(message)
 
@@ -257,15 +270,17 @@ def handle_flow(user: str, message: str):
     place = user_data[4]
     state = user_data[1]
 
+    print("USER STATE:", state)
+
     # Ask missing fields
     if not name:
-        return ai_say("Ask for the user's name.")
+        return ai_say("Ask for the user's name in a friendly way.")
 
     if not phone:
-        return ai_say("Ask for phone number.")
+        return ai_say("Ask for phone number", f"User name is {name}")
 
     if not place:
-        return ai_say("Ask for location.")
+        return ai_say("Ask for the user's location.")
 
     # SHOW SLOTS
     if state == "ready_for_slots":
@@ -277,46 +292,42 @@ def handle_flow(user: str, message: str):
         update_user(user, "slots_json", json.dumps(slots))
         update_user(user, "state", "choosing_slot")
 
-        slot_text = "\n".join([f"• {s['label']}" for s in slots])
+        user_data = get_user(user)  # refresh
+
+        slot_text = "\n".join(
+            [f"{i + 1}) {s['label']}" for i, s in enumerate(slots)]
+        )
 
         return f"""Great! Here are available slots:
 
 {slot_text}
 
-👉 Reply with your preferred time (e.g., 10:30 AM)"""
+👉 Reply with a number (1–{len(slots)}) to book your slot."""
 
     # SELECT SLOT
     if state == "choosing_slot":
 
-        slots = json.loads(user_data[5])
+        slots_json = user_data[5]
 
-        user_input = message.lower().replace(" ", "")
+        if not slots_json:
+            return "Something went wrong. Please try again."
 
-        selected_slot = None
-        for s in slots:
-            slot_label = s["label"].lower().replace(" ", "")
-            if slot_label in user_input:
-                selected_slot = s
-                break
+        slots = json.loads(slots_json)
 
-        if not selected_slot:
-            return "Please select a valid slot from the list."
+        try:
+            choice = int(message.strip())
+        except:
+            return f"Please enter a valid number between 1 and {len(slots)}."
+
+        if choice < 1 or choice > len(slots):
+            return f"Invalid choice ❌\n\nPlease select a number between 1 and {len(slots)}."
+
+        selected_slot = slots[choice - 1]
 
         try:
             book_slot(name, phone, selected_slot["value"])
         except:
-            new_slots = get_available_slots()
-            update_user(user, "slots_json", json.dumps(new_slots))
-
-            slot_text = "\n".join([f"• {s['label']}" for s in new_slots])
-
-            return f"""That slot was just booked 😅
-
-Here are updated slots:
-
-{slot_text}
-
-Please choose again."""
+            return "That slot was just booked 😅 Please choose another one."
 
         update_user(user, "state", "booked")
 
@@ -335,3 +346,5 @@ Please choose again."""
         update_user(user, "phone", "")
         update_user(user, "place", "")
         return "Welcome back! May I have your name?"
+
+    return "Let’s continue."
