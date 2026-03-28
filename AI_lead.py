@@ -16,12 +16,13 @@ from googleapiclient.discovery import build
 from google.oauth2 import service_account
 
 SCOPES = ['https://www.googleapis.com/auth/calendar']
-SERVICE_ACCOUNT_FILE = 'service_account.json'
+SERVICE_ACCOUNT_INFO = json.loads(os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON"))
+
+credentials = service_account.Credentials.from_service_account_info(
+    SERVICE_ACCOUNT_INFO,
+    scopes=SCOPES)
 
 CALENDAR_ID = "ragulcom33@gmail.com"
-
-credentials = service_account.Credentials.from_service_account_file(
-    SERVICE_ACCOUNT_FILE, scopes=SCOPES)
 
 calendar_service = build('calendar', 'v3', credentials=credentials)
 
